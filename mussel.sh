@@ -4,7 +4,8 @@
 # Distributed under the terms of the ISC License
 
 # Contributors:
-# * Alexander Barris (AwlsomeAlex)
+# * Alexander Barris (AwlsomeAlex) <alex@awlsome.com>
+# * ayb <ayb@3hg.fr>
 
 set -e
 umask 022
@@ -14,9 +15,11 @@ umask 022
 #---------------------------------------#
 
 # ----- Optional ----- #
+CXX_SUPPORT=yes
 LINUX_HEADERS_SUPPORT=no
 OPENMP_SUPPORT=no
 PARALLEL_SUPPORT=no
+PKG_CONFIG_SUPPORT=no
 
 # ----- Colors ----- #
 REDC='\033[1;31m'
@@ -34,11 +37,9 @@ linux_ver=5.11.2
 mpc_ver=1.2.1
 mpfr_ver=4.1.0
 musl_ver=1.2.2
+pkgconf_ver=1.7.3
 
 # ----- Package URLs ----- #
-# The usage of ftpmirror for GNU packages is preferred. We also try to use the
-# smallest available tarballs from upstream (so .zst > .lz > .xz > .bzip2 > .gz).
-#
 binutils_url=https://ftpmirror.gnu.org/binutils/binutils-$binutils_ver.tar.lz
 gcc_url=https://ftpmirror.gnu.org/gcc/gcc-$gcc_ver/gcc-$gcc_ver.tar.xz
 gmp_url=https://ftpmirror.gnu.org/gmp/gmp-$gmp_ver.tar.zst
@@ -47,6 +48,7 @@ linux_url=https://cdn.kernel.org/pub/linux/kernel/v5.x/linux-$linux_ver.tar.xz
 mpc_url=https://ftpmirror.gnu.org/mpc/mpc-$mpc_ver.tar.gz
 mpfr_url=https://www.mpfr.org/mpfr-current/mpfr-$mpfr_ver.tar.xz
 musl_url=https://www.musl-libc.org/releases/musl-$musl_ver.tar.gz
+pkgconf_url=https://distfiles.dereferenced.org/pkgconf/pkgconf-$pkgconf_ver.tar.xz
 
 # ----- Package Checksums (sha512sum) ----- #
 binutils_sum=4c28e2dbc5b5cc99ab1265c8569a63925cf99109296deaa602b9d7d1123dcc1011ffbffb7bb6bb0e5e812176b43153f5a576cc4281e5f2b06e4a1d9db146b609
@@ -57,50 +59,21 @@ linux_sum=16090ec6dea7a8c417ca7483b296902c9b55b423482ad8a881dffcaae76411806bc950
 mpc_sum=3279f813ab37f47fdcc800e4ac5f306417d07f539593ca715876e43e04896e1d5bceccfb288ef2908a3f24b760747d0dbd0392a24b9b341bc3e12082e5c836ee
 mpfr_sum=1bd1c349741a6529dfa53af4f0da8d49254b164ece8a46928cdb13a99460285622d57fe6f68cef19c6727b3f9daa25ddb3d7d65c201c8f387e421c7f7bee6273
 musl_sum=5344b581bd6463d71af8c13e91792fa51f25a96a1ecbea81e42664b63d90b325aeb421dfbc8c22e187397ca08e84d9296a0c0c299ba04fa2b751d6864914bd82
+pkgconf_sum=37b6c4f9f3b93970e35b6970fde22fbbde65e7fa32a5634b3fdfc25cc1f33843582722ad13d9a8e96fd6768406fcbe86bf5feb76996ddd0bb66d6ff91e65f0b6
 
 # ----- Development Directories ----- #
 CURDIR="$PWD"
 SRCDIR="$CURDIR/sources"
 BLDDIR="$CURDIR/builds"
 PCHDIR="$CURDIR/patches"
-# Please don't change $MSYSROOT to `$CURDIR/toolchain/$XTARGET` like CLFS and
-# other implementations because it'll break here (even if binutils insists
-# on installing stuff to that directory).
-#
+
 MPREFIX="$CURDIR/toolchain"
 MSYSROOT="$CURDIR/sysroot"
 
 # ----- mussel Log File ---- #
 MLOG="$CURDIR/log.txt"
 
-# ----- Available Architectures ----- #
-# All architectures require a static libgcc to be built before musl.
-# This static libgcc won't be linked against any C library, and will suffice to
-# to build musl for these architectures.
-# All listed archs were tested and are fully working!
-#
-# - aarch64
-# - armv6zk (Raspberry Pi 1 Models A, B, B+, the Compute Module, and the Raspberry
-# Pi Zero)
-# - armv7
-# - i586
-# - i686
-# - microblaze
-# - microblazeel
-# - mips64
-# - mips64el
-# - mips64r6
-# - mips64r6el
-# - or1k
-# - powerpc
-# - powerpc64
-# - powerpc64le
-# - riscv64
-# - s390x
-# - x86_64
-
 # ----- PATH ----- # 
-# Use host tools, then switch to ours when they're available
 #
 PATH=$MPREFIX/bin:/usr/bin:/bin
 
@@ -108,175 +81,149 @@ PATH=$MPREFIX/bin:/usr/bin:/bin
 CFLAGS=-O2
 CXXFLAGS=-O2
 
-# ----- Mussel Flags ----- #
-# The --parallel flag will use all available cores on the host system (3 * nproc
-# is being used instead of the traditional '2 * nproc + 1', since it ensures
-# parallelism).
-#
-# It's also common to see `--enable-secureplt' added to cross gcc args when the
-# target is powerpc*, but that's only the case to get musl to support 32-bit
-# powerpc (as instructed by musl's wiki, along with --with-long-double-64, which
-# was replaced by `--without-long-double-128` in recent GCC versions). For
-# 64-bit powerpc like powerpc64 and powerpc64le, there's no need to explicitly
-# specify it. (needs more investigation, but works without it)
-#
-# To recap:
-# - XARCH is the arch that we are supporting and the user chooses
-# - LARCH is the arch that is supported by the linux kernel (found in
-# $SRCDIR/linux/linux-$linux_ver/arch/)
-# - MARCH is the arch that is supported by musl (found in
-# $SRCDIR/musl/musl-$musl_ver/arch/)
-# - XTARGET is the final target triplet
-#
-if [ $# -eq 0 ]; then
-  printf -- "${REDC}!!${NORMALC} No Architecture Specified!\n"
-  printf -- "Run '${0} -h' for help.\n"
-  exit
-fi
+# ----- mussel Flags ----- #
 while [ $# -gt 0 ]; do
   case $1 in
     aarch64)
-      XARCH=aarch64
+      XARCH=$1
       LARCH=arm64
-      MARCH=$XARCH
+      MARCH=$1
       XGCCARGS="--with-arch=armv8-a --with-abi=lp64 --enable-fix-cortex-a53-835769 --enable-fix-cortex-a53-843419"
-      XTARGET=$XARCH-linux-musl
+      XTARGET=$1-linux-musl
       ;;
     armv6zk)
-      XARCH=armv6zk
+      XARCH=$1
       LARCH=arm
       MARCH=$LARCH
-      XGCCARGS="--with-arch=$XARCH --with-tune=arm1176jzf-s --with-abi=aapcs-linux --with-fpu=vfp --with-float=hard"
-      XTARGET=$MARCH-linux-musleabihf
+      XGCCARGS="--with-arch=$1 --with-tune=arm1176jzf-s --with-abi=aapcs-linux --with-fpu=vfp --with-float=hard"
+      XTARGET=$LARCH-linux-musleabihf
       ;;
     armv7)
-      XARCH=armv7
+      XARCH=$1
       LARCH=arm
       MARCH=$LARCH
-      XGCCARGS="--with-arch=${MARCH}v7-a --with-fpu=vfpv3 --with-float=hard"
-      XTARGET=$MARCH-linux-musleabihf
+      XGCCARGS="--with-arch=${LARCH}v7-a --with-fpu=vfpv3 --with-float=hard"
+      XTARGET=$LARCH-linux-musleabihf
       ;;
     i586)
-      XARCH=i586
+      XARCH=$1
       LARCH=i386
       MARCH=$LARCH
-      XGCCARGS="--with-arch=$XARCH --with-tune=generic"
-      XTARGET=$XARCH-linux-musl
+      XGCCARGS="--with-arch=$1 --with-tune=generic"
+      XTARGET=$1-linux-musl
       ;;
     i686)
-      XARCH=i686
+      XARCH=$1
       LARCH=i386
       MARCH=$LARCH
-      XGCCARGS="--with-arch=$XARCH --with-tune=generic"
-      XTARGET=$XARCH-linux-musl
+      XGCCARGS="--with-arch=$1 --with-tune=generic"
+      XTARGET=$1-linux-musl
       ;;
     microblaze)
-      XARCH=microblaze
-      LARCH=$XARCH
-      MARCH=$XARCH
+      XARCH=$1
+      LARCH=$1
+      MARCH=$1
       XGCCARGS="--with-endian=big"
-      XTARGET=$XARCH-linux-musl
+      XTARGET=$1-linux-musl
       ;;
     microblazeel)
-      XARCH=microblazeel
+      XARCH=$1
       LARCH=microblaze
       MARCH=$LARCH
       XGCCARGS="--with-endian=little"
-      XTARGET=$XARCH-linux-musl
+      XTARGET=$1-linux-musl
       ;;
     mips64)
-      XARCH=mips64
+      XARCH=$1
       LARCH=mips
-      MARCH=$XARCH
-      XGCCARGS="--with-endian=big --with-arch=$XARCH --with-abi=64 --with-float=hard"
-      XTARGET=$XARCH-linux-musl
+      MARCH=$1
+      XGCCARGS="--with-endian=big --with-arch=$1 --with-abi=64 --with-float=hard"
+      XTARGET=$1-linux-musl
       ;;
     mips64el)
-      XARCH=mips64el
+      XARCH=$1
       LARCH=mips
-      MARCH=mips64
-      XGCCARGS="--with-endian=little --with-arch=mips64 --with-abi=64 --with-float=hard"
-      XTARGET=$XARCH-linux-musl
+      MARCH=${LARCH}64
+      XGCCARGS="--with-endian=little --with-arch=$MARCH --with-abi=64 --with-float=hard"
+      XTARGET=$1-linux-musl
       ;;
     mips64r6)
-      XARCH=mips64r6
+      XARCH=$1
       LARCH=mips
-      MARCH=mips64
+      MARCH=${LARCH}64
       XGCCARGS="--with-endian=big --with-arch=$XARCH --with-abi=64 --with-float=hard"
-      XTARGET=mipsisa64r6-linux-musl
+      XTARGET=${LARCH}isa64r6-linux-musl
       ;;
     mips64r6el)
-      XARCH=mips64r6el
+      XARCH=$1
       LARCH=mips
-      MARCH=mips64
-      XGCCARGS="--with-endian=little --with-arch=mips64r6 --with-abi=64 --with-float=hard"
-      XTARGET=mipsisa64r6el-linux-musl
+      MARCH=${LARCH}64
+      XGCCARGS="--with-endian=little --with-arch=${MARCH}r6 --with-abi=64 --with-float=hard"
+      XTARGET=${LARCH}isa64r6el-linux-musl
       ;;
     or1k)
-      XARCH=or1k
+      XARCH=$1
       LARCH=openrisc
-      MARCH=$XARCH
-      # There's no such option as `--with-float=hard` for this arch
+      MARCH=$1
       XGCCARGS=""
-      XTARGET=$XARCH-linux-musl
+      XTARGET=$1-linux-musl
       ;;
     powerpc)
-      XARCH=powerpc
-      LARCH=$XARCH
-      MARCH=$XARCH
-      XGCCARGS="--with-cpu=$XARCH --enable-secureplt --without-long-double-128"
-      XTARGET=$XARCH-linux-musl
+      XARCH=$1
+      LARCH=$1
+      MARCH=$1
+      XGCCARGS="--with-cpu=$1 --enable-secureplt --without-long-double-128"
+      XTARGET=$1-linux-musl
       ;;
     powerpc64)
-      XARCH=powerpc64
+      XARCH=$1
       LARCH=powerpc
-      MARCH=$XARCH
-      XGCCARGS="--with-cpu=$XARCH --with-abi=elfv2"
-      XTARGET=$XARCH-linux-musl
+      MARCH=$1
+      XGCCARGS="--with-cpu=$1 --with-abi=elfv2"
+      XTARGET=$1-linux-musl
       ;;
     powerpc64le)
-      XARCH=powerpc64le
+      XARCH=$1
       LARCH=powerpc
-      MARCH=powerpc64
-      XGCCARGS="--with-cpu=$XARCH --with-abi=elfv2"
-      XTARGET=$XARCH-linux-musl
+      MARCH=${LARCH}64
+      XGCCARGS="--with-cpu=$1 --with-abi=elfv2"
+      XTARGET=$1-linux-musl
       ;;
     riscv64)
-      XARCH=riscv64
+      XARCH=$1
       LARCH=riscv
-      MARCH=$XARCH
+      MARCH=$1
       XGCCARGS="--with-arch=rv64imafdc --with-tune=rocket --with-abi=lp64d"
-      XTARGET=$XARCH-linux-musl
+      XTARGET=$1-linux-musl
       ;;
     s390x)
-      XARCH=s390x
+      XARCH=$1
       LARCH=s390
-      MARCH=$XARCH
-      # --enable-decimal-float is the default on z9-ec and higher (e.g. z196)
+      MARCH=$1
       XGCCARGS="--with-arch=z196 --with-tune=zEC12 --with-long-double-128"
-      XTARGET=$XARCH-linux-musl
+      XTARGET=$1-linux-musl
       ;;
     x86_64)
-      XARCH=x86_64
-      LARCH=$XARCH
-      MARCH=$XARCH
+      XARCH=$1
+      LARCH=$1
+      MARCH=$1
       XGCCARGS="--with-arch=x86-64 --with-tune=generic"
-      XTARGET=$XARCH-linux-musl
+      XTARGET=$1-linux-musl
       ;;
-    c | -c | clean)
+    c | -c | --clean)
       printf -- "${BLUEC}..${NORMALC} Cleaning mussel...\n" 
       rm -fr $BLDDIR
       rm -fr $MPREFIX
       rm -fr $MSYSROOT
       rm -fr $MLOG
-      printf -- "${GREENC}=>${NORMALC} Cleaned mussel.\n"
+      printf -- "${GREENC}=>${NORMALC} mussel cleaned.\n"
       exit
       ;;
     h | -h | --help)
       printf -- 'Copyright (c) 2020-2021, Firas Khalil Khana\n'
       printf -- 'Distributed under the terms of the ISC License\n'
       printf -- '\n'
-      printf -- 'mussel - The fastest musl-libc cross compiler generator\n'
+      printf -- 'mussel - The fastest musl libc cross compiler generator\n'
       printf -- '\n'
       printf -- "Usage: $0: (architecture) (flags)\n"
       printf -- "Usage: $0: (command)\n"
@@ -303,28 +250,37 @@ while [ $# -gt 0 ]; do
       printf -- '\t+ x86_64\n'
       printf -- '\n'
       printf -- 'Flags:\n'
-      printf -- '\tl | -l | --linux:   \tEnable optional Linux Headers support\n'
-      printf -- '\to | -o | --openmp:  \tEnable optional OpenMP support\n'
-      printf -- '\tp | -p | --parallel:\tUse all available cores on the host system\n'
+      printf -- '\th | -h | --help                \tDisplay help message\n'
+      printf -- '\tk | -k | --enable-pkg-config   \tEnable optional pkg-config support\n'
+      printf -- '\tl | -l | --enable-linux-headers\tEnable optional Linux Headers support\n'
+      printf -- '\to | -o | --enable-openmp       \tEnable optional OpenMP support\n'
+      printf -- '\tp | -p | --parallel            \tUse all available cores on the host system\n'
+      printf -- '\tx | -x | --disable-cxx         \tDisable optional C++ support\n'
       printf -- '\n'
       printf -- 'Commands:\n'
-      printf -- "\tc | -c | clean:\tClean mussel's build environment\n"
+      printf -- "\tc | -c | --clean               \tClean mussel's build environment\n"
       printf -- '\n'
       printf -- 'No penguins were harmed in the making of this script!\n'
-      exit 1
+      exit
       ;;
-    l | -l | --linux)
+    k | -k | --enable-pkg-config)
+      PKG_CONFIG_SUPPORT=yes
+      ;;
+    l | -l | --enable-linux-headers)
       LINUX_HEADERS_SUPPORT=yes
       ;;
-    o | -o | --openmp)
+    o | -o | --enable-openmp)
       OPENMP_SUPPORT=yes
       ;;
     p | -p | --parallel)
       PARALLEL_SUPPORT=yes
       ;;
+    x | -x | --disable-cxx)
+      CXX_SUPPORT=no
+      ;;
     *)
       printf -- "${REDC}!!${NORMALC} Unknown architecture or flag: $1\n"
-      printf -- "Refer to '$0 -h' for help.\n"
+      printf -- "Run '$0 -h' for help.\n"
       exit 1
       ;;
   esac
@@ -332,13 +288,13 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+if [ -z $XARCH ]; then
+  printf -- "${REDC}!!${NORMALC} No Architecture Specified!\n"
+  printf -- "Run '$0 -h' for help.\n"
+  exit 1
+fi
+
 # ----- Make Flags ----- #
-# This ensures that no documentation is being built, and it prevents binutils
-# from requiring texinfo (binutils looks for makeinfo, and it fails if it
-# doesn't find it, and the build stops). (musl-cross-make)
-#
-# Also please don't use `MAKEINFO=false', because binutils will still fail.
-#
 if [ $PARALLEL_SUPPORT = yes ]; then
   JOBS="$(expr 3 \* $(nproc))"
   MAKE="make INFO_DEPS= infodir= ac_cv_prog_lex_root=lex.yy MAKEINFO=true -j$JOBS"
@@ -387,7 +343,7 @@ mpackage() {
   printf -- "${BLUEC}..${NORMALC} Unpacking $HOLDER...\n"
   pv $HOLDER | bsdtar xf - -C .
 
-  printf -- "${GREENC}=>${NORMALC} $HOLDER prepared!\n\n"
+  printf -- "${GREENC}=>${NORMALC} $HOLDER prepared.\n\n"
   printf -- "${HOLDER}: Ok\n" >> $MLOG
 }
 
@@ -417,7 +373,7 @@ mclean() {
     printf -- "${BLUEC}..${NORMALC} Cleaning $1 directory...\n"
     rm -fr "$CURDIR/$1"
     mkdir "$CURDIR/$1"
-    printf -- "${GREENC}=>${NORMALC} $1 cleaned\n"
+    printf -- "${GREENC}=>${NORMALC} $1 cleaned.\n"
     printf -- "Cleaned $1.\n" >> $MLOG
   fi
 }
@@ -428,13 +384,18 @@ mclean() {
 
 printf -- '\n'
 printf -- '+=======================================================+\n'
-printf -- '| mussel.sh - The fastest musl-libc Toolchain Generator |\n'
+printf -- '| mussel.sh - The fastest musl libc Toolchain Generator |\n'
 printf -- '+-------------------------------------------------------+\n'
 printf -- '|      Copyright (c) 2020-2021, Firas Khalil Khana      |\n'
 printf -- '|     Distributed under the terms of the ISC License    |\n'
 printf -- '+=======================================================+\n'
 printf -- '\n'
-printf -- "Chosen target architecture: $XARCH\n\n"
+printf -- "Target Architecture:            $XARCH\n\n"
+printf -- "Optional C++ Support:           $CXX_SUPPORT\n"
+printf -- "Optional Linux Headers Support: $LINUX_HEADERS_SUPPORT\n"
+printf -- "Optional OpenMP Support:        $OPENMP_SUPPORT\n"
+printf -- "Optional Parallel Support:      $PARALLEL_SUPPORT\n"
+printf -- "Optional pkg-config Support:    $PKG_CONFIG_SUPPORT\n\n"
 
 [ ! -d $SRCDIR ] && printf -- "${BLUEC}..${NORMALC} Creating the sources directory...\n" && mkdir $SRCDIR
 [ ! -d $BLDDIR ] && printf -- "${BLUEC}..${NORMALC} Creating the builds directory...\n" && mkdir $BLDDIR
@@ -442,18 +403,15 @@ printf -- "Chosen target architecture: $XARCH\n\n"
 printf -- '\n'
 rm -fr $MLOG
 
-# ----- Print Variables to Log ----- #
-# This is important as debugging will be easier knowing what the 
-# environmental variables are, and instead of assuming, the 
-# system can tell us by printing each of them to the log
-#
-printf -- 'mussel.sh - Toolchain Compiler Log\n\n' >> $MLOG 2>&1
-printf -- "XARCH: $XARCH\nLARCH: $LARCH\nMARCH: $MARCH\nXTARGET: $XTARGET\n" >> $MLOG 2>&1
-printf -- "XGCCARGS: $XGCCARGS\n" >> $MLOG 2>&1
-printf -- "CFLAGS: $CFLAGS\nCXXFLAGS: $CXXFLAGS\n" >> $MLOG 2>&1
-printf -- "PATH: $PATH\nMAKE: $MAKE\n" >> $MLOG 2>&1
-printf -- "Host Kernel: $(uname -a)\nHost Info: $(cat /etc/*release)\n" >> $MLOG 2>&1
-printf -- "\nStart Time: $(date)\n\n" >> $MLOG 2>&1
+# ----- Print Variables to mussel Log File ----- #
+printf -- 'mussel Log File\n\n' >> $MLOG
+printf -- "CXX_SUPPORT: $CXX_SUPPORT\nLINUX_HEADERS_SUPPORT: $LINUX_HEADERS_SUPPORT\nOPENMP_SUPPORT: $OPENMP_SUPPORT\nPARALLEL_SUPPORT: $PARALLEL_SUPPORT\nPKG_CONFIG_SUPPORT: $PKG_CONFIG_SUPPORT\n\n" >> $MLOG
+printf -- "XARCH: $XARCH\nLARCH: $LARCH\nMARCH: $MARCH\nXTARGET: $XTARGET\n" >> $MLOG
+printf -- "XGCCARGS: \"$XGCCARGS\"\n\n" >> $MLOG
+printf -- "CFLAGS: \"$CFLAGS\"\nCXXFLAGS: \"$CXXFLAGS\"\n\n" >> $MLOG
+printf -- "PATH: \"$PATH\"\nMAKE: \"$MAKE\"\n\n" >> $MLOG
+printf -- "Host Kernel: \"$(uname -a)\"\nHost Info:\n$(cat /etc/*release)\n" >> $MLOG
+printf -- "\nStart Time: $(date)\n\n" >> $MLOG
 
 # ----- Prepare Packages ----- #
 printf -- "-----\nprepare\n-----\n\n" >> $MLOG
@@ -461,15 +419,16 @@ mpackage binutils "$binutils_url" $binutils_sum $binutils_ver
 mpackage gcc "$gcc_url" $gcc_sum $gcc_ver
 mpackage gmp "$gmp_url" $gmp_sum $gmp_ver
 mpackage isl "$isl_url" $isl_sum $isl_ver
-mpackage linux "$linux_url" $linux_sum $linux_ver
+
+[ $LINUX_HEADERS_SUPPORT = yes ] && mpackage linux "$linux_url" $linux_sum $linux_ver
+
 mpackage mpc "$mpc_url" $mpc_sum $mpc_ver
 mpackage mpfr "$mpfr_url" $mpfr_sum $mpfr_ver
 mpackage musl "$musl_url" $musl_sum $musl_ver
 
+[ $PKG_CONFIG_SUPPORT = yes ] && mpackage pkgconf "$pkgconf_url" $pkgconf_sum $pkgconf_ver
+
 # ----- Patch Packages ----- #
-# No package requires patching (GCC may require patching when targetting 64-bit
-# MIPS architectures, if that happens consider using the following patch from
-# glaucus: https://raw.githubusercontent.com/glaucuslinux/cerata/master/gcc/patches/glaucus/0001-pure64-for-mips64.patch)
 
 # ----- Clean Directories ----- #
 printf -- "\n-----\nclean\n-----\n\n" >> $MLOG
@@ -486,15 +445,6 @@ cd $BLDDIR
 cp -ar $SRCDIR/musl/musl-$musl_ver musl
 cd musl
 
-#
-# We only want the headers to configure gcc... Also with musl installs, you
-# almost always should use a DESTDIR (that also should 99% be equal to gcc's
-# and binutils `--with-sysroot` value...
-#
-# We also need to pass `ARCH=$MARCH` and `prefix=/usr` since we haven't
-# configured musl, to get the right versions of musl headers for the target
-# architecture.
-#
 printf -- "${BLUEC}..${NORMALC} Installing musl headers...\n"
 $MAKE \
   ARCH=$MARCH \
@@ -511,23 +461,6 @@ cd $BLDDIR
 mkdir cross-binutils
 cd cross-binutils
 
-#
-# Unlike musl, `--prefix` for GNU stuff means where we expect them to be
-# installed, so specifying it will save you the need to add a `DESTDIR` when
-# installing.
-# 
-# The `--target` specifies that we're cross compiling, and binutils tools will
-# be prefixed by the value provided to it. There's no need to specify `--build`
-# and `--host` as `config.guess`/`config.sub` are now smart enough to figure
-# them in almost all GNU packages.
-#
-# The use of `--disable-werror` is almost a neccessity now, without it the build
-# may fail, or throw implicit-fallthrough warnings, among others (Aurelian).
-#
-# Notice how we specify a `--with-sysroot` here to tell binutils to consider
-# the passed value as the root directory of our target system in which it'll
-# search for target headers and libraries.
-#
 printf -- "${BLUEC}..${NORMALC} Configuring cross-binutils...\n"
 $SRCDIR/binutils/binutils-$binutils_ver/configure \
   --prefix=$MPREFIX \
@@ -551,11 +484,8 @@ $MAKE \
 printf -- "${GREENC}=>${NORMALC} cross-binutils finished.\n\n"
 
 # ----- Step 3: cross-gcc (compiler) ----- #
-# We track GCC's prerequisites manually instead of using
-# `contrib/download_prerequisites` in gcc's sources.
-#
 printf -- "\n-----\n*3) cross-gcc (compiler)\n-----\n\n" >> $MLOG
-printf -- "${BLUEC}..${NORMALC} Preparing cross-gcc...\n"
+printf -- "${BLUEC}..${NORMALC} Preparing cross-gcc (compiler)...\n"
 cp -ar $SRCDIR/gmp/gmp-$gmp_ver $SRCDIR/gcc/gcc-$gcc_ver/gmp
 cp -ar $SRCDIR/mpfr/mpfr-$mpfr_ver $SRCDIR/gcc/gcc-$gcc_ver/mpfr
 cp -ar $SRCDIR/mpc/mpc-$mpc_ver $SRCDIR/gcc/gcc-$gcc_ver/mpc
@@ -565,17 +495,7 @@ cd $BLDDIR
 mkdir cross-gcc
 cd cross-gcc
 
-#
-# Again, everything said in cross-binutils applies here.
-#
-# We need c++ language support to be able to build GCC, since GCC has big parts
-# of its source code written in C++.
-#
-# If you want to use zstd as a backend for LTO, just add `--with-zstd` below and
-# make sure you have zstd (or zstd-devel or whatever it's called) installed on
-# your host.
-#
-printf -- "${BLUEC}..${NORMALC} Configuring cross-gcc...\n"
+printf -- "${BLUEC}..${NORMALC} Configuring cross-gcc (compiler)...\n"
 $SRCDIR/gcc/gcc-$gcc_ver/configure \
   --prefix=$MPREFIX \
   --target=$XTARGET \
@@ -587,51 +507,35 @@ $SRCDIR/gcc/gcc-$gcc_ver/configure \
   --disable-werror \
   --enable-initfini-array $XGCCARGS >> $MLOG 2>&1
 
-printf -- "${BLUEC}..${NORMALC} Building cross-gcc compiler...\n"
+printf -- "${BLUEC}..${NORMALC} Building cross-gcc (compiler)...\n"
 mkdir -p $MSYSROOT/usr/include
 $MAKE \
   all-gcc >> $MLOG 2>&1
 
-printf -- "${BLUEC}..${NORMALC} Installing cross-gcc compiler...\n"
+printf -- "${BLUEC}..${NORMALC} Installing cross-gcc (compiler)...\n"
 $MAKE \
   install-strip-gcc >> $MLOG 2>&1
 
-#
-# Notice how we're not optimizing libgcc-static by passing -O0 in both CFLAGS
-# and CXXFLAGS as we're only using libgcc-static to build musl, then we rebuild
-# it later on as a full libgcc-shared.
-#
-printf -- "${BLUEC}..${NORMALC} Building cross-gcc libgcc-static...\n"
+printf -- "${BLUEC}..${NORMALC} Building cross-gcc (libgcc-static)...\n"
 CFLAGS='-g0 -O0' \
 CXXFLAGS='-g0 -O0' \
 $MAKE \
   enable_shared=no \
   all-target-libgcc >> $MLOG 2>&1
 
-printf -- "${BLUEC}..${NORMALC} Installing cross-gcc libgcc-static...\n"
+printf -- "${BLUEC}..${NORMALC} Installing cross-gcc (libgcc-static)...\n"
 $MAKE \
   install-strip-target-libgcc >> $MLOG 2>&1
 
-printf -- "${GREENC}=>${NORMALC} cross-gcc libgcc-static finished.\n\n"
+printf -- "${GREENC}=>${NORMALC} cross-gcc (libgcc-static) finished.\n\n"
+
+printf -- "${GREENC}=>${NORMALC} cross-gcc (compiler) finished.\n\n"
 
 # ----- Step 4: musl ----- #
-# We need a separate build directory for musl now that we have our cross GCC
-# ready. Using the same directory as musl headers without reconfiguring musl
-# would break the ABI.
-#
 printf -- "\n-----\n*4) musl\n-----\n\n" >> $MLOG
 printf -- "${BLUEC}..${NORMALC} Preparing musl...\n"
 cd $BLDDIR/musl
 
-#
-# musl can be configured with a nonexistent libgcc-static which is what
-# musl-cross-make does, but we're able to build libgcc.a before musl so it's
-# considered existent here. (We can configure musl with a nonexistent libgcc.a
-# then go back to $BLDDIR/cross-gcc and build libgcc.a, then come back to
-# $BLDDIR/musl and build musl (which is what musl-cross-make does), but that's a
-# lot of jumping, and we end up rebuilding libgcc later on as a shared version
-# to be able to compile the rest of GCC libs, so why confuse ourselves?)
-#
 printf -- "${BLUEC}..${NORMALC} Configuring musl...\n"
 ARCH=$MARCH \
 CC=$XTARGET-gcc \
@@ -639,147 +543,128 @@ CROSS_COMPILE=$XTARGET- \
 LIBCC="$MPREFIX/lib/gcc/$XTARGET/$gcc_ver/libgcc.a" \
 ./configure \
   --host=$XTARGET \
-  --prefix=/usr \
-  --disable-static >> $MLOG 2>&1
+  --prefix=/usr >> $MLOG 2>&1
 
 printf -- "${BLUEC}..${NORMALC} Building musl...\n"
 $MAKE \
   AR=$XTARGET-ar \
   RANLIB=$XTARGET-ranlib >> $MLOG 2>&1
 
-#
-# We can specify `install-libs install-tools` instead of `install` (since we
-# already have the headers installed (with `install-headers above`)), but
-# apparently `install` skips the headers if it found them already installed?
-#
 printf -- "${BLUEC}..${NORMALC} Installing musl...\n"
 $MAKE \
   AR=$XTARGET-ar \
   RANLIB=$XTARGET-ranlib \
   DESTDIR=$MSYSROOT \
-  install >> MLOG 2>&1
+  install >> $MLOG 2>&1
 
-#
-# Almost all implementations of musl based toolchains would want to change the
-# symlink between LDSO and the libc.so because it'll be wrong almost always...
-#
 rm -f $MSYSROOT/lib/ld-musl-$MARCH.so.1
-cp -a $MSYSROOT/usr/lib/libc.so $MSYSROOT/lib/ld-musl-$MARCH.so.1
+cp -av $MSYSROOT/usr/lib/libc.so $MSYSROOT/lib/ld-musl-$MARCH.so.1 >> $MLOG 2>&1
 
 printf -- "${GREENC}=>${NORMALC} musl finished.\n\n"
 
-# ----- Step 5: cross-gcc libgcc-shared ----- #
-# After having built musl, we need to rebuild libgcc but this time as
-# libgcc-shared to be able to build the following gcc libs (like libstdc++-v3
-# and libgomp which would complain about a missing -lgcc_s and would error out
-# with C compiler doesn't work).
-#
-printf -- "\n-----\n*5) cross-gcc libgcc-shared\n-----\n\n" >> $MLOG
-printf -- "${BLUEC}..${NORMALC} Preparing cross-gcc libgcc-shared...\n"
+# ----- Step 5: cross-gcc (libgcc-shared) ----- #
+printf -- "\n-----\n*5) cross-gcc (libgcc-shared)\n-----\n\n" >> $MLOG
+printf -- "${BLUEC}..${NORMALC} Preparing cross-gcc (libgcc-shared)...\n"
 cd $BLDDIR/cross-gcc
-# We need to run `make distclean` and not just `make clean` to make sure the
-# leftovers from the previous static build of libgcc are gone so we can build
-# the shared version without having to restart the entire build just to build
-# libgcc-shared!
+
 $MAKE \
   -C $XTARGET/libgcc distclean >> $MLOG 2>&1
 
-#
-# We specify `enable_shared=yes` here which is certainly not needed but
-# recommended to always get a shared build in this step!
-#
-printf -- "${BLUEC}..${NORMALC} Building cross-gcc libgcc-shared...\n"
+printf -- "${BLUEC}..${NORMALC} Building cross-gcc (libgcc-shared)...\n"
 $MAKE \
   enable_shared=yes \
   all-target-libgcc >> $MLOG 2>&1
 
-printf -- "${BLUEC}..${NORMALC} Installing cross-gcc libgcc-shared...\n"
+printf -- "${BLUEC}..${NORMALC} Installing cross-gcc (libgcc-shared)...\n"
 $MAKE \
   install-strip-target-libgcc >> $MLOG 2>&1
 
-printf -- "${GREENC}=>${NORMALC} cross-gcc libgcc-shared finished.\n\n"
+printf -- "${GREENC}=>${NORMALC} cross-gcc (libgcc-shared) finished.\n\n"
 
-# ----- [Optional For C++ Support] Step 6: cross-gcc (libstdc++-v3) ----- #
-# C++ support is enabled by default.
-#
-printf -- "\n-----\n*6) cross-gcc (libstdc++-v3)\n-----\n\n" >> $MLOG
-printf -- "${BLUEC}..${NORMALC} Building cross-gcc libstdc++-v3...\n"
-cd $BLDDIR/cross-gcc
-$MAKE \
-  all-target-libstdc++-v3 >> $MLOG 2>&1
+# ----- [Optional C++ Support] Step 6: cross-gcc (libstdc++-v3) ----- #
+if [ $CXX_SUPPORT = yes ]; then
+  printf -- "\n-----\n*6) cross-gcc (libstdc++-v3)\n-----\n\n" >> $MLOG
+  printf -- "${BLUEC}..${NORMALC} Building cross-gcc (libstdc++-v3)...\n"
+  cd $BLDDIR/cross-gcc
+  $MAKE \
+    all-target-libstdc++-v3 >> $MLOG 2>&1
 
-printf -- "${BLUEC}..${NORMALC} Installing cross-gcc libstdc++-v3...\n"
-$MAKE \
-  install-strip-target-libstdc++-v3 >> $MLOG 2>&1
+  printf -- "${BLUEC}..${NORMALC} Installing cross-gcc (libstdc++-v3)...\n"
+  $MAKE \
+    install-strip-target-libstdc++-v3 >> $MLOG 2>&1
 
-printf -- "${GREENC}=>${NORMALC} cross-gcc libstdc++v3 finished.\n\n"
+  printf -- "${GREENC}=>${NORMALC} cross-gcc (libstdc++v3) finished.\n\n"
+fi
 
-# ----- [Optional For OpenMP Support] Step 7: cross-gcc (libgomp) ----- #
-# If you're planning on targeting a machine with two or more cores, then it
-# might be a good idea to enable support for OpenMP optimizations as well
-# (beware as some packages may fail to build with OpenMP enabled e.g. grub)
-#
+# ----- [Optional OpenMP Support] Step 7: cross-gcc (libgomp) ----- #
 if [ $OPENMP_SUPPORT = yes ]; then
   printf -- "\n-----\n*7) cross-gcc (libgomp)\n-----\n\n" >> $MLOG
-  printf -- "${BLUEC}..${NORMALC} Building cross-gcc libgomp...\n"
+  printf -- "${BLUEC}..${NORMALC} Building cross-gcc (libgomp)...\n"
   $MAKE \
-    all-target-libgomp &>> MLOG
+    all-target-libgomp >> $MLOG 2>&1
 
-  printf -- "${BLUEC}..${NORMALC} Installing cross-gcc libgomp...\n"
+  printf -- "${BLUEC}..${NORMALC} Installing cross-gcc (libgomp)...\n"
   $MAKE \
     install-strip-target-libgomp >> $MLOG 2>&1
 
-  printf -- "${GREENC}=>${NORMALC} cross-gcc libgomp finished.\n\n"
+  printf -- "${GREENC}=>${NORMALC} cross-gcc (libgomp) finished.\n\n"
 fi
 
-# ----- [Optional For Linux Headers Support] Step 8: linux-headers ----- #
-# If you're planning on targeting a Linux system then it's a good idea to
-# include support for Linux kernel headers as several packages require them.
-#
+# ----- [Optional Linux Headers Support] Step 8: linux headers ----- #
 if [ $LINUX_HEADERS_SUPPORT = yes ]; then
-  printf -- "\n-----\n*8) linux-headers\n-----\n\n" >> $MLOG
-  printf -- "${BLUEC}..${NORMALC} Preparing linux-headers...\n"
+  printf -- "\n-----\n*8) linux headers\n-----\n\n" >> $MLOG
+  printf -- "${BLUEC}..${NORMALC} Preparing linux headers...\n"
   cd $BLDDIR
-  mkdir linux-headers
+  mkdir linux
 
   cd $SRCDIR/linux/linux-$linux_ver
 
-  #
-  # We first perform a `mrproper` to ensure that our kernel source tree is
-  # clean.
-  #
   $MAKE \
     ARCH=$LARCH \
-    mrproper &>> MLOG
+    mrproper >> $MLOG 2>&1
 
-  #
-  # It's always a good idea to perform a sanity check on the headers we're
-  # installing.
-  #
   $MAKE \
-    O=$BLDDIR/linux-headers \
+    O=$BLDDIR/linux \
     ARCH=$LARCH \
-    headers_check &>> MLOG
+    headers_check >> $MLOG 2>&1
 
-  #
-  # We won't be polluting our kernel source tree which is why we're specifying
-  # `O=$BLDDIR/linux-headers` (which I believe may or may not be used since
-  # we're only installing the kernel header files and not actually building
-  # anything, but just to be safe...).
-  #
-  # The `headers_install` target requires `rsync` to be available (this is the
-  # default as of 5.3, it also performs additional cleaning on cmd files which
-  # may require manual cleaning if we're manually copying the headers (in the
-  # case of rsync not being available, which isn't recommended)).
-  #
-  printf -- "${BLUEC}..${NORMALC} Installing linux-headers...\n"
+  printf -- "${BLUEC}..${NORMALC} Installing linux headers...\n"
   $MAKE \
-  O=$BLDDIR/linux-headers \
-  ARCH=$LARCH \
-  INSTALL_HDR_PATH=$MSYSROOT/usr \
-  headers_install &>> MLOG
+    O=$BLDDIR/linux \
+    ARCH=$LARCH \
+    INSTALL_HDR_PATH=$MSYSROOT/usr \
+    headers_install >> $MLOG 2>&1
 
-  printf -- "${GREENC}=>${NORMALC} linux-headers finished.\n\n"
+  printf -- "${GREENC}=>${NORMALC} linux headers finished.\n\n"
+fi
+
+# ----- [Optional pkg-config Support] Step 9: pkgconf ----- #
+if [ $PKG_CONFIG_SUPPORT = yes ]; then
+  printf -- "\n-----\n*9) pkgconf\n-----\n\n" >> $MLOG
+  printf -- "${BLUEC}..${NORMALC} Preparing pkgconf...\n"
+  cd $BLDDIR
+  mkdir pkgconf
+  cd pkgconf
+
+  printf -- "${BLUEC}..${NORMALC} Configuring pkgconf...\n"
+  CFLAGS="$CFLAGS -fcommon" \
+  $SRCDIR/pkgconf/pkgconf-$pkgconf_ver/configure \
+    --prefix=$MPREFIX \
+    --with-sysroot=$MSYSROOT \
+    --with-pkg-config-dir="$MSYSROOT/usr/lib/pkgconfig:$MSYSROOT/usr/share/pkgconfig" \
+    --with-system-libdir="$MSYSROOT/usr/lib" \
+    --with-system-includedir="$MSYSROOT/usr/include" >> $MLOG 2>&1
+
+  printf -- "${BLUEC}..${NORMALC} Building pkgconf...\n"
+  $MAKE >> $MLOG 2>&1
+
+  printf -- "${BLUEC}..${NORMALC} Installing pkgconf...\n"
+  $MAKE \
+    install-strip >> $MLOG 2>&1
+
+  ln -sv pkgconf $MPREFIX/bin/pkg-config >> $MLOG 2>&1
+
+  printf -- "${GREENC}=>${NORMALC} pkgconf finished.\n\n"
 fi
 
 printf -- "${GREENC}=>${NORMALC} Done! Enjoy your new ${XARCH} cross compiler targeting musl libc!\n"
